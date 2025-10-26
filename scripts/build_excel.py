@@ -1,149 +1,241 @@
 import os
 from pathlib import Path
 import pandas as pd
-from openpyxl import Workbook
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
-from openpyxl.formatting.rule import CellIsRule
+from openpyxl import load_workbook
 
+# Inputs/env
 ROOT = Path(__file__).resolve().parents[1]
-DATA = ROOT / "data"
-OUT_XLSX = ROOT / "AMEISE-Plan.xlsx"
-
+TEMPLATE_PATH = ROOT / os.getenv("TEMPLATE_PATH", "template/AMEISE-planning-template-v1.95-ip.xlsx")
+OUT_PATH = ROOT / "template" / "AMEISE-planning-template-v1.95-ip_filled.xlsx"
 BUDGET_CAP = float(os.getenv("BUDGET_CAP", "225000"))
 
-COLOR_MAP = {
-    "CD": "F4A460",  # Code
-    "MD": "9ACD32",  # Module Design
-    "MN": "40E0D0",  # Manuals
-    "SD": "98FB98",  # System Design
-    "SP": "F4A1A1",  # Specification
-    "C":  "ADD8E6",  # Correcting
-    "R":  "87CEFA",  # Review
-    "TA": "E6A8D7",  # Acceptance Test
-    "TM": "DEB887",  # Module Test
-    "TI": "87CEEB",  # Integration Test
-    "TS": "D8BFD8",  # System Test
-    "RSP": "87CEFA",
-    "RSD": "87CEFA",
-    "RMD": "87CEFA",
-    "RTM": "87CEFA",
-    "RTI": "87CEFA",
-    "RTS": "87CEFA",
-    "CSP": "ADD8E6",
-    "CSD": "ADD8E6",
-    "CMD": "ADD8E6",
+# Option A metrics
+PM = 26.36
+DURATION_MONTHS = 8.67
+AVG_DEV = round(PM / DURATION_MONTHS, 2)  # ~3.04
+DAYS_PER_MONTH = 30.4
+
+# Effort distribution (fractions)
+EFFORT = {
+    "Management": 0.07,
+    "Specification": 0.10,
+    "Design": 0.27,
+    "Coding": 0.26,
+    "Testing": 0.18,
+    "Reviews": 0.03,
+    "Manuals": 0.09,
 }
 
-def write_df(ws, df, header=True):
-    for r in dataframe_to_rows(df, index=False, header=header):
-        ws.append(r)
-    if header:
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-            cell.alignment = Alignment(horizontal="center")
-    thin = Side(style="thin", color="DDDDDD")
-    for row in ws.iter_rows():
-        for c in row:
-            c.border = Border(top=thin, bottom=thin, left=thin, right=thin)
+# Hourly rates (EUR/h)
+RATES = {
+    "Axel": 40,
+    "Bernd": 40,
+    "Christine": 45,
+    "Diana": 40,
+    "Richard": 50,
+    "Stefanie": 40,
+    "Thomas": 45,
+}
 
-def autosize(ws):
-    for col in ws.columns:
-        max_length = 0
-        col_letter = col[0].column_letter
-        for cell in col:
-            v = str(cell.value) if cell.value is not None else ""
-            max_length = max(max_length, len(v))
-        ws.column_dimensions[col_letter].width = min(max_length + 2, 28)
+# Schedule data
+SCHEDULE_CSV = ROOT / "data" / "AMEISE-Schedule-v2-grid.csv"
 
-def color_schedule(ws):
-    for row in ws.iter_rows(min_row=2, min_col=2):  # skip header and Person col
-        for cell in row:
-            if not cell.value:
-                continue
-            token = str(cell.value).split("+")[0].strip()
-            color = COLOR_MAP.get(token)
-            if color:
-                cell.fill = PatternFill("solid", fgColor=color)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
+def load_schedule():
+    df = pd.read_csv(SCHEDULE_CSV).fillna("")
+    sched = {}
+    for _, row in df.iterrows():
+        person = str(row["Person"]).strip()
+        weeks = {}
+        for c in df.columns:
+            if c.startswith("W"):
+                try:
+                    w = int(c[1:])
+                except:
+                    continue
+                val = str(row[c]).strip()
+                weeks[w] = "" if val == "nan" else val
+        sched[person] = weeks
+    return sched
 
-def build_schedule_sheet(wb, df):
-    ws = wb.create_sheet("Schedule")
-    for r in dataframe_to_rows(df, index=False, header=True):
-        ws.append(r)
-    color_schedule(ws)
-    autosize(ws)
-    ws.freeze_panes = "B2"
+# Helpers to find and write into cells by labels (works with instructor template)
+def find_cell(ws, text):
+    for r in range(1, min(ws.max_row, 160)+1):
+        for c in range(1, min(ws.max_column, 160)+1):
+            v = ws.cell(r, c).value
+            if isinstance(v, str) and v.strip() == text:
+                return r, c
+    return None
 
-def build_cost_sheet(wb, df):
-    ws = wb.create_sheet("Cost Estimation")
-    for r in dataframe_to_rows(df, index=False, header=True):
-        ws.append(r)
-    autosize(ws)
-    # Find TOTAL row by label
-    total_row = None
-    for i in range(2, ws.max_row + 1):
-        val = ws.cell(i, 1).value
-        if val and str(val).strip().upper() == "TOTAL":
-            total_row = i
+def find_cell_startswith(ws, text):
+    for r in range(1, min(ws.max_row, 160)+1):
+        for c in range(1, min(ws.max_column, 160)+1):
+            v = ws.cell(r, c).value
+            if isinstance(v, str) and v.strip().startswith(text):
+                return r, c
+    return None
+
+def set_right_of_label(ws, label, value):
+    pos = find_cell_startswith(ws, label)
+    if not pos:
+        return False
+    r, c = pos
+    ws.cell(r, c+1, value)
+    return True
+
+def find_week_grid(ws):
+    # Find header 'Week' and first week column
+    pos = find_cell(ws, "Week")
+    if not pos:
+        pos = find_cell(ws, "week")
+    if not pos:
+        return None
+    r, c = pos
+    # Find numeric '1' to the right
+    col1 = None
+    for cc in range(c+1, min(c+80, ws.max_column)):
+        v = ws.cell(r, cc).value
+        if v in (1, "1"):
+            col1 = cc
             break
-    if not total_row:
-        return
-    # Budget Cap (auto)
-    ws.cell(row=total_row + 1, column=1).value = "BUDGET_CAP (auto)"
-    cap_cell = ws.cell(row=total_row + 1, column=5)
-    cap_cell.value = BUDGET_CAP
-    cap_cell.number_format = "#,##0.00"
-    # Slack = Cap - Total
-    ws.cell(row=total_row + 2, column=1).value = "BUDGET_SLACK (auto)"
-    slack_cell = ws.cell(row=total_row + 2, column=5)
-    slack_cell.value = f"=E{total_row + 1}-E{total_row}"
-    slack_cell.number_format = "#,##0.00"
-    # Conditional formatting: Total > Cap → red
-    ws.conditional_formatting.add(
-        f"E{total_row}:E{total_row}",
-        CellIsRule(
-            operator="greaterThan",
-            formula=[f"E{total_row + 1}"],
-            fill=PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
-        ),
-    )
+    if not col1:
+        col1 = c+1
+    return r, col1
 
-def build_optionA_sheet(wb):
-    ws = wb.create_sheet("OptionA")
-    rows = [
-        ["Metric", "Value"],
-        ["Person-Months (PM)", 26.36],
-        ["Duration (months)", 8.67],
-        ["Duration (days)", 263.57],
-        ["Avg Developers", 3.04],
-        [],
-        ["Category","Percent","PM","Months","Days"],
-        ["Management",0.07,1.8452,0.6069,18.48],
-        ["Specification",0.10,2.6360,0.8670,26.36],
-        ["Design",0.27,7.1172,2.3409,71.16],
-        ["Coding",0.26,6.8536,2.2542,68.53],
-        ["Testing",0.18,4.7448,1.5606,47.06],
-        ["Reviews",0.03,0.7908,0.2601,7.91],
-        ["Manuals",0.09,2.3724,0.7803,23.53],
-        ["TOTAL",1.00,26.36,8.67,263.57],
-    ]
-    for r in rows:
-        ws.append(r)
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-    autosize(ws)
+def find_person_row(ws, person, start_row=1, max_row=220, search_cols=8):
+    for r in range(start_row, min(max_row, ws.max_row)+1):
+        for c in range(1, min(search_cols, ws.max_column)+1):
+            v = ws.cell(r, c).value
+            if isinstance(v, str) and v.strip() == person:
+                return r
+    return None
+
+def count_assigned_weeks(ws, person_row, col_week1, n_weeks=40):
+    used = 0
+    for i in range(n_weeks):
+        v = ws.cell(person_row, col_week1 + i).value
+        if isinstance(v, str) and v.strip():
+            used += 1
+    return used
+
+def fill_effort_table(ws):
+    # Locate "Effort Distribution"
+    pos = find_cell_startswith(ws, "Effort Distribution")
+    if not pos:
+        return
+    r0, c0 = pos
+    header_row = r0 + 1
+    # Write rows for our categories
+    i = 1
+    for cat, pct in EFFORT.items():
+        r = header_row + i
+        ws.cell(r, c0, cat)
+        ws.cell(r, c0+1, round(pct*100, 2))           # %
+        ws.cell(r, c0+2, round(PM*pct, 4))            # PM
+        months = DURATION_MONTHS * pct
+        ws.cell(r, c0+3, round(months, 4))            # months
+        ws.cell(r, c0+4, round(months*DAYS_PER_MONTH, 2))  # days
+        i += 1
+    # Totals
+    ws.cell(header_row + len(EFFORT) + 1, c0, "Total Effort")
+    ws.cell(header_row + len(EFFORT) + 1, c0+2, round(PM, 2))
+    ws.cell(header_row + len(EFFORT) + 1, c0+3, round(DURATION_MONTHS, 2))
+    ws.cell(header_row + len(EFFORT) + 1, c0+4, round(DURATION_MONTHS*DAYS_PER_MONTH, 0))
+
+def fill_schedule_grid(ws, sched):
+    info = find_week_grid(ws)
+    if not info:
+        return
+    header_row, col_week1 = info
+    start_row = header_row + 1
+    n_weeks = 40
+    for person, weeks in sched.items():
+        r = find_person_row(ws, person, start_row=start_row)
+        if not r:
+            continue
+        for i in range(1, n_weeks+1):
+            token = weeks.get(i, "")
+            ws.cell(r, col_week1 + (i-1), token if token else None)
+
+def fill_cost_table(ws):
+    pos = find_cell_startswith(ws, "Cost Estimation")
+    if not pos:
+        return
+    r0, c0 = pos
+    name_col = c0
+    rate_col = c0 + 1
+    weeks_col = c0 + 2
+    months_col = c0 + 3
+    hours_col = c0 + 4
+    total_col = c0 + 5
+
+    # Get week grid to count activity cells per person
+    info = find_week_grid(ws)
+    if not info:
+        return
+    _, col_week1 = info
+
+    # Iterate rows below header
+    row = r0 + 2
+    grand_total = 0.0
+    while row <= ws.max_row:
+        name = ws.cell(row, name_col).value
+        if not name or (isinstance(name, str) and name.strip() == ""):
+            break
+        name = str(name).strip()
+        if name not in RATES:
+            row += 1
+            continue
+        rate = RATES[name]
+        person_row = find_person_row(ws, name, start_row=1)
+        weeks_used = count_assigned_weeks(ws, person_row, col_week1) if person_row else 0
+        hours = weeks_used * 40
+        months = round((weeks_used * 7.0) / DAYS_PER_MONTH, 2)
+        total = round(hours * rate, 2)
+
+        ws.cell(row, rate_col, rate)
+        ws.cell(row, weeks_col, weeks_used)
+        ws.cell(row, months_col, months)
+        ws.cell(row, hours_col, hours)
+        ws.cell(row, total_col, total)
+
+        grand_total += total
+        row += 1
+
+    # Find "Total Project Costs" row and write total
+    for rr in range(row, row+10):
+        v = ws.cell(rr, name_col).value
+        if isinstance(v, str) and v.strip().startswith("Total Project Costs"):
+            ws.cell(rr, total_col, round(grand_total, 2))
+            break
 
 def main():
-    wb = Workbook()
-    wb.remove(wb.active)
-    df_sched = pd.read_csv(ROOT / "data" / "AMEISE-Schedule-v2-grid.csv")
-    df_cost = pd.read_csv(ROOT / "data" / "Cost-Estimation-v2.csv")
-    build_schedule_sheet(wb, df_sched)
-    build_cost_sheet(wb, df_cost)
-    build_optionA_sheet(wb)
-    wb.save(OUT_XLSX)
-    print(f"Wrote {OUT_XLSX}")
+    if not TEMPLATE_PATH.exists():
+        raise FileNotFoundError(f"Template not found: {TEMPLATE_PATH}")
+    sched = load_schedule()
+    wb = load_workbook(TEMPLATE_PATH)
+    ws = wb.active
+
+    # Top-left metrics (right to labels)
+    set_right_of_label(ws, "Est. Proj. Duration", round(DURATION_MONTHS, 2))
+    set_right_of_label(ws, "Est. Avg. Developers", AVG_DEV)
+    set_right_of_label(ws, "Est. PersonMonths", round(PM, 2))
+
+    fill_effort_table(ws)
+    fill_schedule_grid(ws, sched)
+    fill_cost_table(ws)
+
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(OUT_PATH)
+    print(f"Saved: {OUT_PATH}")
+
+# Reused helper
+def set_right_of_label(ws, label, value):
+    pos = find_cell_startswith(ws, label)
+    if not pos:
+        return False
+    r, c = pos
+    ws.cell(r, c+1, value)
+    return True
 
 if __name__ == "__main__":
     main()
