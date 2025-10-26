@@ -41,34 +41,16 @@ RATES = {
 
 SCHEDULE_CSV = ROOT / "data" / "AMEISE-Schedule-v2-grid.csv"
 
-def autodetect_template():
-    if TEMPLATE_PATH.exists():
-        print(f"[info] Using template from env path: {TEMPLATE_PATH}")
-        return TEMPLATE_PATH
-    tpl_dir = ROOT / "template"
-    if not tpl_dir.exists():
-        raise FileNotFoundError(f"Template directory not found: {tpl_dir}")
-    candidates = list(tpl_dir.glob("*.xlsx"))
-    if not candidates:
-        raise FileNotFoundError(f"No .xlsx files found in {tpl_dir}")
-    preferred = [c for c in candidates if "planning-template" in c.name.lower() or "ameise" in c.name.lower()]
-    chosen = preferred[0] if preferred else candidates[0]
-    print(f"[info] TEMPLATE_PATH not found; auto-selected: {chosen}")
-    return chosen
-
+# ----------------- CSV loading (tolerant to minor format issues) -----------------
 def load_schedule():
     target_len = 41  # Person + W1..W40
-    # Read raw rows
     with open(SCHEDULE_CSV, newline="", encoding="utf-8") as f:
         rows = list(csv.reader(f))
 
     if not rows:
         raise ValueError(f"Schedule CSV is empty: {SCHEDULE_CSV}")
 
-    # Canonical header
     header = ["Person"] + [f"W{i}" for i in range(1, 41)]
-
-    # Normalize each data row length to exactly 41
     fixed_rows = []
     for idx, row in enumerate(rows[1:], start=2):
         if len(row) < target_len:
@@ -86,21 +68,51 @@ def load_schedule():
                 row = row[:target_len]
         fixed_rows.append(row)
 
-    # Create DataFrame with canonical header
     df = pd.DataFrame(fixed_rows, columns=header).fillna("")
     sched = {}
     for _, r in df.iterrows():
         person = str(r["Person"]).strip()
         if not person:
             continue
-        # Correct f-string: r[f"W{i}"]
         weeks = {i: (str(r[f"W{i}"]).strip() if str(r[f"W{i}"]).strip() != "nan" else "") for i in range(1, 41)}
         sched[person] = weeks
     return sched
 
-# Helpers to find and write into cells by labels
+# ----------------- Helpers for merged cells and label-targeting -----------------
+def cell_in_merged_range(ws, r, c):
+    for m in ws.merged_cells.ranges:
+        if m.min_row <= r <= m.max_row and m.min_col <= c <= m.max_col:
+            return m
+    return None
+
+def safe_write(ws, r, c, value):
+    """
+    Write value to cell (r,c), but if it's a merged cell, write to the top-left of its merged range.
+    """
+    merged = cell_in_merged_range(ws, r, c)
+    if merged:
+        r, c = merged.min_row, merged.min_col
+    ws.cell(r, c, value)
+
+def write_right_of_label(ws, label, value):
+    """
+    Find the cell with 'label', and write 'value' to the first cell to the right of its merged region.
+    """
+    pos = find_cell_startswith(ws, label)
+    if not pos:
+        print(f"[warn] Label not found: {label}")
+        return False
+    r, c = pos
+    target_c = c + 1
+    merged = cell_in_merged_range(ws, r, c)
+    if merged:
+        target_c = merged.max_col + 1
+    safe_write(ws, r, target_c, value)
+    return True
+
+# ----------------- Generic finders -----------------
 def find_cell(ws, text):
-    t = text.strip().lower()
+    t = str(text).strip().lower()
     for r in range(1, min(ws.max_row, 200)+1):
         for c in range(1, min(ws.max_column, 200)+1):
             v = ws.cell(r, c).value
@@ -109,7 +121,7 @@ def find_cell(ws, text):
     return None
 
 def find_cell_startswith(ws, text):
-    t = text.strip().lower()
+    t = str(text).strip().lower()
     for r in range(1, min(ws.max_row, 200)+1):
         for c in range(1, min(ws.max_column, 200)+1):
             v = ws.cell(r, c).value
@@ -117,15 +129,7 @@ def find_cell_startswith(ws, text):
                 return r, c
     return None
 
-def set_right_of_label(ws, label, value):
-    pos = find_cell_startswith(ws, label)
-    if not pos:
-        print(f"[warn] Label not found: {label}")
-        return False
-    r, c = pos
-    ws.cell(r, c+1, value)
-    return True
-
+# ----------------- Week grid + person mapping -----------------
 def find_week_grid(ws):
     pos = find_cell(ws, "Week") or find_cell(ws, "week")
     if not pos:
@@ -159,28 +163,74 @@ def count_assigned_weeks(ws, person_row, col_week1, n_weeks=40):
             used += 1
     return used
 
-def fill_effort_table(ws):
-    pos = find_cell_startswith(ws, "Effort Distribution")
+# ----------------- Effort Distribution table handling -----------------
+def find_effort_headers(ws):
+    """
+    Locate the Effort Distribution header row with column names:
+    'Types of Effort' | '%' | 'PM' | 'months' | 'days'
+    Returns (header_row, colmap) where colmap has keys: type, pct, pm, months, days.
+    """
+    pos = find_cell_startswith(ws, "Types of Effort") or find_cell_startswith(ws, "Types of effort")
     if not pos:
-        print("[warn] 'Effort Distribution' not found; skip")
-        return
-    r0, c0 = pos
-    header_row = r0 + 1
-    i = 1
-    for cat, pct in EFFORT.items():
-        r = header_row + i
-        ws.cell(r, c0, cat)
-        ws.cell(r, c0+1, round(pct*100, 2))
-        ws.cell(r, c0+2, round(PM*pct, 4))
-        months = DURATION_MONTHS * pct
-        ws.cell(r, c0+3, round(months, 4))
-        ws.cell(r, c0+4, round(months*DAYS_PER_MONTH, 2))
-        i += 1
-    ws.cell(header_row + len(EFFORT) + 1, c0, "Total Effort")
-    ws.cell(header_row + len(EFFORT) + 1, c0+2, round(PM, 2))
-    ws.cell(header_row + len(EFFORT) + 1, c0+3, round(DURATION_MONTHS, 2))
-    ws.cell(header_row + len(EFFORT) + 1, c0+4, round(DURATION_MONTHS*DAYS_PER_MONTH, 0))
+        return None
+    r_types, _ = pos
 
+    def scan_row(row):
+        colmap = {}
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(row, c).value
+            if not isinstance(v, str):
+                continue
+            s = v.strip()
+            sl = s.lower()
+            if sl == "types of effort" and "type" not in colmap:
+                colmap["type"] = c
+            elif s == "%" and "pct" not in colmap:
+                colmap["pct"] = c
+            elif sl == "pm" and "pm" not in colmap:
+                colmap["pm"] = c
+            elif sl == "months" and "months" not in colmap:
+                colmap["months"] = c
+            elif sl == "days" and "days" not in colmap:
+                colmap["days"] = c
+        return colmap
+
+    # Try the found row, then nearby rows (in case headers are just below)
+    for rr in (r_types, r_types + 1, r_types - 1):
+        if rr < 1 or rr > ws.max_row:
+            continue
+        colmap = scan_row(rr)
+        if all(k in colmap for k in ("type", "pct", "pm", "months", "days")):
+            return rr, colmap
+    return None
+
+def fill_effort_table(ws):
+    headers = find_effort_headers(ws)
+    if not headers:
+        print("[warn] Effort headers not found; skipping effort table fill")
+        return
+    header_row, colmap = headers
+    start_row = header_row + 1
+
+    i = 0
+    for cat, pct in EFFORT.items():
+        r = start_row + i
+        safe_write(ws, r, colmap["type"], cat)
+        safe_write(ws, r, colmap["pct"], round(pct * 100, 2))
+        safe_write(ws, r, colmap["pm"], round(PM * pct, 4))
+        months = DURATION_MONTHS * pct
+        safe_write(ws, r, colmap["months"], round(months, 4))
+        safe_write(ws, r, colmap["days"], round(months * DAYS_PER_MONTH, 2))
+        i += 1
+
+    # Totals
+    r_tot = start_row + len(EFFORT) + 1
+    safe_write(ws, r_tot, colmap["type"], "Total Effort")
+    safe_write(ws, r_tot, colmap["pm"], round(PM, 2))
+    safe_write(ws, r_tot, colmap["months"], round(DURATION_MONTHS, 2))
+    safe_write(ws, r_tot, colmap["days"], round(DURATION_MONTHS * DAYS_PER_MONTH, 0))
+
+# ----------------- Schedule grid and Cost table -----------------
 def fill_schedule_grid(ws, sched):
     info = find_week_grid(ws)
     if not info:
@@ -194,9 +244,9 @@ def fill_schedule_grid(ws, sched):
         if not r:
             print(f"[info] Person not found in template: {person}")
             continue
-        for i in range(1, n_weeks+1):
+        for i in range(1, n_weeks + 1):
             token = weeks.get(i, "")
-            ws.cell(r, col_week1 + (i-1), token if token else None)
+            safe_write(ws, r, col_week1 + (i - 1), token if token else None)
 
 def fill_cost_table(ws):
     pos = find_cell_startswith(ws, "Cost Estimation")
@@ -233,21 +283,37 @@ def fill_cost_table(ws):
         months = round((weeks_used * 7.0) / DAYS_PER_MONTH, 2)
         total = round(hours * rate, 2)
 
-        ws.cell(row, rate_col, rate)
-        ws.cell(row, weeks_col, weeks_used)
-        ws.cell(row, months_col, months)
-        ws.cell(row, hours_col, hours)
-        ws.cell(row, total_col, total)
+        safe_write(ws, row, rate_col, rate)
+        safe_write(ws, row, weeks_col, weeks_used)
+        safe_write(ws, row, months_col, months)
+        safe_write(ws, row, hours_col, hours)
+        safe_write(ws, row, total_col, total)
 
         grand_total += total
         row += 1
 
     # Write total if label exists
-    for rr in range(row, row+12):
+    for rr in range(row, row + 12):
         v = ws.cell(rr, name_col).value
         if isinstance(v, str) and v.strip().lower().startswith("total project costs"):
-            ws.cell(rr, total_col, round(grand_total, 2))
+            safe_write(ws, rr, total_col, round(grand_total, 2))
             break
+
+# ----------------- Main -----------------
+def autodetect_template():
+    if TEMPLATE_PATH.exists():
+        print(f"[info] Using template from env path: {TEMPLATE_PATH}")
+        return TEMPLATE_PATH
+    tpl_dir = ROOT / "template"
+    if not tpl_dir.exists():
+        raise FileNotFoundError(f"Template directory not found: {tpl_dir}")
+    candidates = list(tpl_dir.glob("*.xlsx"))
+    if not candidates:
+        raise FileNotFoundError(f"No .xlsx files found in {tpl_dir}")
+    preferred = [c for c in candidates if "planning-template" in c.name.lower() or "ameise" in c.name.lower()]
+    chosen = preferred[0] if preferred else candidates[0]
+    print(f"[info] TEMPLATE_PATH not found; auto-selected: {chosen}")
+    return chosen
 
 def main():
     template_path = autodetect_template()
@@ -257,9 +323,9 @@ def main():
     ws = wb.active
 
     # Top-left metrics
-    set_right_of_label(ws, "Est. Proj. Duration", round(DURATION_MONTHS, 2))
-    set_right_of_label(ws, "Est. Avg. Developers", AVG_DEV)
-    set_right_of_label(ws, "Est. PersonMonths", round(PM, 2))
+    write_right_of_label(ws, "Est. Proj. Duration", round(DURATION_MONTHS, 2))
+    write_right_of_label(ws, "Est. Avg. Developers", AVG_DEV)
+    write_right_of_label(ws, "Est. PersonMonths", round(PM, 2))
 
     fill_effort_table(ws)
     fill_schedule_grid(ws, sched)
