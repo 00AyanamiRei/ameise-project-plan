@@ -1,15 +1,20 @@
-name: Build Excel
+name: Fill AMEISE Template
 
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - "template/**.xlsx"
+      - "data/**"
+      - "scripts/fill_template.py"
+      - ".github/workflows/fill-template.yml"
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  fill:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -25,21 +30,22 @@ jobs:
       - name: Install deps
         run: pip install pandas openpyxl
 
-      - name: Build Excel
+      - name: Fill template
         env:
           BUDGET_CAP: ${{ vars.BUDGET_CAP || '225000' }}
-        run: python scripts/build_excel.py
+          TEMPLATE_PATH: ${{ vars.TEMPLATE_PATH || 'template/AMEISE-planning-template-v1.95-ip.xlsx' }}
+        run: python scripts/fill_template.py
 
-      - name: Upload artifact
+      - name: Upload filled workbook
         uses: actions/upload-artifact@v4
         with:
-          name: AMEISE-Plan.xlsx
-          path: AMEISE-Plan.xlsx
+          name: AMEISE-Plan_filled.xlsx
+          path: template/AMEISE-planning-template-v1.95-ip_filled.xlsx
 
-      - name: Commit Excel back to repo
+      - name: Commit filled workbook
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add AMEISE-Plan.xlsx
-          git commit -m "build: generate AMEISE-Plan.xlsx" || echo "No changes to commit"
+          git add template/AMEISE-planning-template-v1.95-ip_filled.xlsx
+          git commit -m "build: update filled AMEISE workbook" || echo "No changes to commit"
           git push
