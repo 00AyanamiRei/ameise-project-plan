@@ -1,9 +1,9 @@
 Person,W1,W2,W3,W4,W5,W6,W7,W8,W9,W10,W11,W12,W13,W14,W15,W16,W17,W18,W19,W20,W21,W22,W23,W24,W25,W26,W27,W28,W29,W30,W31,W32,W33,W34,W35,W36,W37,W38,W39,W40
 Customer,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,TA,TA,TA,TA,TA,TA,TA
 Richard,SP,SP,SP,SP,,MD,MD,MD,MD,MD+RSD,,,,,,,,,,RCD,,,,,RTI,,,,,,,,,
-Christine,,,,,SD,SD,SD,CSD,CSD,,,,,,,,,TM,TM,TM,TM,TM,TM+RTM,,,,,,,,,,,,,,
+Christine,,,,,SD,SD,SD,CSD,CSD,,,,,,,,,TM,TM,TM,TM,TM,TM,,,,,,,,,,,,,,
 Diana,,,,,,,,CD,CD,CD,CD,CD,CD,CD,CD,CD,CD,,,,,,,,,,,,,,,,,,,,
-Axel,,,,RSP,,,,,,,CD+RMD,CD,CD,CD,CD,CD,CD,,,,,,,,,,,,,TS,TS,TS+RTS,,,,,,,
+Axel,,,,RSP,,,,,,,CD+RMD,CD,CD,CD,CD,CD,CD,,,,,,,,,,RTM,,,,,TS,TS,TS+RTS,,,,,,,
 Bernd,,,,,,,,,CD,CD,CD,CD,CD,CD,CD,CD,,,,,,,,,,,,,R,R,R,,,,,,
 Thomas,,,,,,,,,,,,,,,,,,,,,,,,TI,TI,TI,TI,TI,TI+RTI,,,,,,,,,
 Stefanie,,,,,,,,,,,,,,,,,,,,,,,,MN,MN,MN,MN,MN,MN,MN,MN,MN,MN
