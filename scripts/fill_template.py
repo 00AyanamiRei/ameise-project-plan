@@ -72,15 +72,13 @@ def load_schedule():
     fixed_rows = []
     for idx, row in enumerate(rows[1:], start=2):
         if len(row) < target_len:
-            # pad with empty cells to match 41
             row = row + [""] * (target_len - len(row))
         elif len(row) > target_len:
-            # allow trimming only if the extra tail is empty; else fail
             tail = row[target_len:]
             if any((c or "").strip() for c in tail):
                 raise ValueError(
                     f"Row {idx} has {len(row)} columns (> {target_len}). "
-                    f"Extra columns (non-empty) detected at the end: {tail}. "
+                    f"Extra columns (non-empty) at the end: {tail}. "
                     f"Remove extra separators or quote cells with commas."
                 )
             else:
@@ -95,8 +93,8 @@ def load_schedule():
         person = str(r["Person"]).strip()
         if not person:
             continue
-        # Correct f-string for column names W1..W40
-        weeks = {i: (str(r[f\"W{i}\"]).strip() if str(r[f\"W{i}\"]).strip() != \"nan\" else \"\") for i in range(1, 41)}
+        # Correct f-string: r[f"W{i}"]
+        weeks = {i: (str(r[f"W{i}"]).strip() if str(r[f"W{i}"]).strip() != "nan" else "") for i in range(1, 41)}
         sched[person] = weeks
     return sched
 
@@ -270,16 +268,6 @@ def main():
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     wb.save(OUT_PATH)
     print(f"[info] Saved filled workbook to {OUT_PATH}")
-
-# Reused helpers
-def set_right_of_label(ws, label, value):
-    pos = find_cell_startswith(ws, label)
-    if not pos:
-        print(f"[warn] Label not found: {label}")
-        return False
-    r, c = pos
-    ws.cell(r, c+1, value)
-    return True
 
 if __name__ == "__main__":
     main()
