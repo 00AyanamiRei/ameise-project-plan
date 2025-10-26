@@ -65,10 +65,10 @@ def load_schedule():
     if not rows:
         raise ValueError(f"Schedule CSV is empty: {SCHEDULE_CSV}")
 
-    # Build canonical header regardless of what's in the file
+    # Canonical header
     header = ["Person"] + [f"W{i}" for i in range(1, 41)]
 
-    # Normalize each data row length to exactly 41
+    # Normalize each data row length to exactly 41 (pad with empty if shorter; error if longer)
     fixed_rows = []
     for idx, row in enumerate(rows[1:], start=2):
         if len(row) < target_len:
@@ -87,7 +87,8 @@ def load_schedule():
         person = str(r["Person"]).strip()
         if not person:
             continue
-        weeks = {i: (str(r[f"W{i]"]).strip() if str(r[f"W{i]"]).strip() != "nan" else "") for i in range(1, 41)}
+        # FIXED: correct f-string for column names W1..W40
+        weeks = {i: (str(r[f"W{i}"]).strip() if str(r[f"W{i}"]).strip() != "nan" else "") for i in range(1, 41)}
         sched[person] = weeks
     return sched
 
