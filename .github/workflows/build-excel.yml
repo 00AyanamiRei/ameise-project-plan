@@ -3,11 +3,10 @@ name: Build Excel
 on:
   push:
     branches: [ "main" ]
-    paths:
-      - "data/**"
-      - "scripts/**"
-      - ".github/workflows/build-excel.yml"
   workflow_dispatch: {}
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -15,23 +14,32 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install deps
         run: pip install pandas openpyxl
+
       - name: Build Excel
         env:
           BUDGET_CAP: ${{ vars.BUDGET_CAP || '225000' }}
         run: python scripts/build_excel.py
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: AMEISE-Plan.xlsx
           path: AMEISE-Plan.xlsx
-      - name: Commit Excel to repo
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "build: generate AMEISE-Plan.xlsx"
-          file_pattern: "AMEISE-Plan.xlsx"
+
+      - name: Commit Excel back to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add AMEISE-Plan.xlsx
+          git commit -m "build: generate AMEISE-Plan.xlsx" || echo "No changes to commit"
+          git push
