@@ -1,4 +1,5 @@
 import os
+import csv
 from pathlib import Path
 import pandas as pd
 from openpyxl import load_workbook
@@ -41,68 +42,75 @@ RATES = {
 SCHEDULE_CSV = ROOT / "data" / "AMEISE-Schedule-v2-grid.csv"
 
 def autodetect_template():
-    """If TEMPLATE_PATH doesn't exist, try to locate a .xlsx in template/."""
     if TEMPLATE_PATH.exists():
         print(f"[info] Using template from env path: {TEMPLATE_PATH}")
         return TEMPLATE_PATH
     tpl_dir = ROOT / "template"
     if not tpl_dir.exists():
-        raise FileNotFoundError(
-            f"Template directory not found: {tpl_dir}\n"
-            "Create 'template/' and upload your Excel file there."
-        )
+        raise FileNotFoundError(f"Template directory not found: {tpl_dir}")
     candidates = list(tpl_dir.glob("*.xlsx"))
     if not candidates:
-        raise FileNotFoundError(
-            f"No .xlsx files found in {tpl_dir}.\n"
-            "Upload your template (e.g., AMEISE-planning-template-v1.95-ip.xlsx) to template/."
-        )
-    # Prefer names containing common keywords
+        raise FileNotFoundError(f"No .xlsx files found in {tpl_dir}")
+    # Prefer names containing these keywords
     preferred = [c for c in candidates if "planning-template" in c.name.lower() or "ameise" in c.name.lower()]
     chosen = preferred[0] if preferred else candidates[0]
-    print(f"[info] TEMPLATE_PATH not found; auto-selected template: {chosen}")
+    print(f"[info] TEMPLATE_PATH not found; auto-selected: {chosen}")
     return chosen
 
 def load_schedule():
-    df = pd.read_csv(SCHEDULE_CSV).fillna("")
+    # Validate column counts explicitly to avoid cryptic pandas errors
+    with open(SCHEDULE_CSV, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+
+    if not rows:
+        raise ValueError(f"Schedule CSV is empty: {SCHEDULE_CSV}")
+
+    header = rows[0]
+    if len(header) != 41 or header[0] != "Person" or any(h != f"W{i}" for i, h in enumerate(header[1:], start=1)):
+        raise ValueError(f"Header must be Person,W1..W40 (41 cols). Found {len(header)} cols: {header}")
+
+    for i, row in enumerate(rows[1:], start=2):
+        if len(row) != 41:
+            raise ValueError(f"Row {i} has {len(row)} columns (expected 41). Offending row: {row}")
+
+    # Safe parse with pandas now that counts are OK
+    df = pd.read_csv(SCHEDULE_CSV, dtype=str).fillna("")
     sched = {}
-    for _, row in df.iterrows():
-        person = str(row["Person"]).strip()
+    for _, r in df.iterrows():
+        person = str(r["Person"]).strip()
         weeks = {}
         for c in df.columns:
             if c.startswith("W"):
-                try:
-                    w = int(c[1:])
-                except:
-                    continue
-                val = str(row[c]).strip()
-                weeks[w] = "" if val == "nan" else val
+                w = int(c[1:])
+                val = (r[c] or "").strip()
+                weeks[w] = val
         sched[person] = weeks
     return sched
 
-# Cell helpers
+# Helpers to find and write into cells by labels
 def find_cell(ws, text):
-    text_norm = text.strip().lower()
+    t = text.strip().lower()
     for r in range(1, min(ws.max_row, 200)+1):
         for c in range(1, min(ws.max_column, 200)+1):
             v = ws.cell(r, c).value
-            if isinstance(v, str) and v.strip().lower() == text_norm:
+            if isinstance(v, str) and v.strip().lower() == t:
                 return r, c
     return None
 
 def find_cell_startswith(ws, text):
-    text_norm = text.strip().lower()
+    t = text.strip().lower()
     for r in range(1, min(ws.max_row, 200)+1):
         for c in range(1, min(ws.max_column, 200)+1):
             v = ws.cell(r, c).value
-            if isinstance(v, str) and v.strip().lower().startswith(text_norm):
+            if isinstance(v, str) and v.strip().lower().startswith(t):
                 return r, c
     return None
 
 def set_right_of_label(ws, label, value):
     pos = find_cell_startswith(ws, label)
     if not pos:
-        print(f"[warn] Label not found (starts with): {label}")
+        print(f"[warn] Label not found: {label}")
         return False
     r, c = pos
     ws.cell(r, c+1, value)
@@ -115,7 +123,7 @@ def find_week_grid(ws):
         return None
     r, c = pos
     col1 = None
-    for cc in range(c+1, min(c+80, ws.max_column)):
+    for cc in range(c+1, min(c+80, ws.max_column+1)):
         v = ws.cell(r, cc).value
         if v in (1, "1"):
             col1 = cc
@@ -144,7 +152,7 @@ def count_assigned_weeks(ws, person_row, col_week1, n_weeks=40):
 def fill_effort_table(ws):
     pos = find_cell_startswith(ws, "Effort Distribution")
     if not pos:
-        print("[warn] 'Effort Distribution' header not found; skipping table fill")
+        print("[warn] 'Effort Distribution' not found; skip")
         return
     r0, c0 = pos
     header_row = r0 + 1
@@ -152,13 +160,12 @@ def fill_effort_table(ws):
     for cat, pct in EFFORT.items():
         r = header_row + i
         ws.cell(r, c0, cat)
-        ws.cell(r, c0+1, round(pct*100, 2))            # %
-        ws.cell(r, c0+2, round(PM*pct, 4))             # PM
+        ws.cell(r, c0+1, round(pct*100, 2))
+        ws.cell(r, c0+2, round(PM*pct, 4))
         months = DURATION_MONTHS * pct
-        ws.cell(r, c0+3, round(months, 4))             # months
-        ws.cell(r, c0+4, round(months*DAYS_PER_MONTH, 2))  # days
+        ws.cell(r, c0+3, round(months, 4))
+        ws.cell(r, c0+4, round(months*DAYS_PER_MONTH, 2))
         i += 1
-    # Totals
     ws.cell(header_row + len(EFFORT) + 1, c0, "Total Effort")
     ws.cell(header_row + len(EFFORT) + 1, c0+2, round(PM, 2))
     ws.cell(header_row + len(EFFORT) + 1, c0+3, round(DURATION_MONTHS, 2))
@@ -167,7 +174,7 @@ def fill_effort_table(ws):
 def fill_schedule_grid(ws, sched):
     info = find_week_grid(ws)
     if not info:
-        print("[warn] Week grid not detected; skipping schedule write")
+        print("[warn] Week grid not detected; skip schedule")
         return
     header_row, col_week1 = info
     start_row = header_row + 1
@@ -175,7 +182,7 @@ def fill_schedule_grid(ws, sched):
     for person, weeks in sched.items():
         r = find_person_row(ws, person, start_row=start_row)
         if not r:
-            print(f"[info] Person row not found in template, skipping: {person}")
+            print(f"[info] Person not found in template: {person}")
             continue
         for i in range(1, n_weeks+1):
             token = weeks.get(i, "")
@@ -184,7 +191,7 @@ def fill_schedule_grid(ws, sched):
 def fill_cost_table(ws):
     pos = find_cell_startswith(ws, "Cost Estimation")
     if not pos:
-        print("[warn] 'Cost Estimation' section not found; skipping")
+        print("[warn] 'Cost Estimation' not found; skip")
         return
     r0, c0 = pos
     name_col = c0
@@ -225,7 +232,7 @@ def fill_cost_table(ws):
         grand_total += total
         row += 1
 
-    # Write Total Project Costs (find by label)
+    # Write total if label exists
     for rr in range(row, row+12):
         v = ws.cell(rr, name_col).value
         if isinstance(v, str) and v.strip().lower().startswith("total project costs"):
