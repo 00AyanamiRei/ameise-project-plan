@@ -51,40 +51,43 @@ def autodetect_template():
     candidates = list(tpl_dir.glob("*.xlsx"))
     if not candidates:
         raise FileNotFoundError(f"No .xlsx files found in {tpl_dir}")
-    # Prefer names containing these keywords
     preferred = [c for c in candidates if "planning-template" in c.name.lower() or "ameise" in c.name.lower()]
     chosen = preferred[0] if preferred else candidates[0]
     print(f"[info] TEMPLATE_PATH not found; auto-selected: {chosen}")
     return chosen
 
 def load_schedule():
-    # Validate column counts explicitly to avoid cryptic pandas errors
+    target_len = 41  # Person + W1..W40
+    # Read raw rows
     with open(SCHEDULE_CSV, newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        rows = list(reader)
+        rows = list(csv.reader(f))
 
     if not rows:
         raise ValueError(f"Schedule CSV is empty: {SCHEDULE_CSV}")
 
-    header = rows[0]
-    if len(header) != 41 or header[0] != "Person" or any(h != f"W{i}" for i, h in enumerate(header[1:], start=1)):
-        raise ValueError(f"Header must be Person,W1..W40 (41 cols). Found {len(header)} cols: {header}")
+    # Build canonical header regardless of what's in the file
+    header = ["Person"] + [f"W{i}" for i in range(1, 41)]
 
-    for i, row in enumerate(rows[1:], start=2):
-        if len(row) != 41:
-            raise ValueError(f"Row {i} has {len(row)} columns (expected 41). Offending row: {row}")
+    # Normalize each data row length to exactly 41
+    fixed_rows = []
+    for idx, row in enumerate(rows[1:], start=2):
+        if len(row) < target_len:
+            row = row + [""] * (target_len - len(row))
+        elif len(row) > target_len:
+            raise ValueError(
+                f"Row {idx} has {len(row)} columns (> {target_len}). "
+                f"Please remove extra separator or quote cells with commas. Offending row: {row}"
+            )
+        fixed_rows.append(row)
 
-    # Safe parse with pandas now that counts are OK
-    df = pd.read_csv(SCHEDULE_CSV, dtype=str).fillna("")
+    # Create DataFrame with canonical header
+    df = pd.DataFrame(fixed_rows, columns=header).fillna("")
     sched = {}
     for _, r in df.iterrows():
         person = str(r["Person"]).strip()
-        weeks = {}
-        for c in df.columns:
-            if c.startswith("W"):
-                w = int(c[1:])
-                val = (r[c] or "").strip()
-                weeks[w] = val
+        if not person:
+            continue
+        weeks = {i: (str(r[f"W{i]"]).strip() if str(r[f"W{i]"]).strip() != "nan" else "") for i in range(1, 41)}
         sched[person] = weeks
     return sched
 
